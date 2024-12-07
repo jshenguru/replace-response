@@ -53,6 +53,8 @@ type Handler struct {
 	Matcher *caddyhttp.ResponseMatcher `json:"match,omitempty"`
 
 	transformerPool *sync.Pool
+
+	repl *caddy.Replacer
 }
 
 // CaddyModule returns the Caddy module information.
@@ -95,14 +97,20 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 				finalReplace := placeholderRepl.ReplaceKnown(repl.Replace, "")
 
 				if repl.re != nil {
-					tr := replace.RegexpString(repl.re, finalReplace)
+					tr := replace.RegexpIndexFunc(repl.re, func(src []byte, index []int) []byte {
+						template := h.repl.ReplaceKnown(finalReplace, "")
+						return repl.re.Expand(nil, []byte(template), src, index)
+					})
 
 					// See: https://github.com/icholy/replace/issues/5#issuecomment-949757616
 					tr.MaxMatchSize = 2048
 					transforms[i] = tr
 				} else {
 					finalSearch := placeholderRepl.ReplaceKnown(repl.Search, "")
-					transforms[i] = replace.String(finalSearch, finalReplace)
+					transforms[i] = replace.String(
+						h.repl.ReplaceKnown(finalSearch, ""),
+						h.repl.ReplaceKnown(finalReplace, ""),
+					)
 				}
 			}
 			return transform.Chain(transforms...)
@@ -115,6 +123,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // ServeHTTP implements caddyhttp.MiddlewareHandler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 
+	repl := r.Context().Value(caddy.ReplacerCtxKey).(*caddy.Replacer)
+	h.repl = repl
+	
 	tr := h.transformerPool.Get().(transform.Transformer)
 	tr.Reset()
 	defer h.transformerPool.Put(tr)
